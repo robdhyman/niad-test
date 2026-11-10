@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSync, syncAll, mergeSessions } from '../sync.js';
+import { createSync, syncAll, mergeSessions, discardAll } from '../sync.js';
 
 // In-memory fake of the GitHub contents API.
 function fakeGitHub() {
@@ -23,6 +23,12 @@ function fakeGitHub() {
     }
     const body = JSON.parse(opts.body);
     const existing = files.get(path);
+    if (opts.method === 'DELETE') {
+      if (!existing) return json(404, { message: 'Not Found' });
+      if (body.sha !== existing.sha) return json(409, { message: 'sha mismatch' });
+      files.delete(path);
+      return json(200, { commit: {} });
+    }
     if (existing && body.sha !== existing.sha) return json(409, { message: 'sha mismatch' });
     const sha = `sha${++shaN}`;
     files.set(path, { content: body.content, sha });
@@ -77,4 +83,22 @@ test('syncAll pushes dirty sessions and pulls new remote ones', async () => {
   assert.equal(out[s1().id].dirty, false);
   assert.ok(out['remote-only']);
   assert.equal(out['remote-only'].dirty, false);
+});
+
+test('discardAll deletes the remote file, and a missing file counts as done', async () => {
+  const gh = fakeGitHub();
+  const sync = createSync({ owner: 'o', repo: 'r', token: 't', fetchImpl: gh.fetchImpl });
+  await sync.push(s1());
+  const done = await discardAll(sync, [s1().id, 'never-synced']);
+  assert.deepEqual(done, [s1().id, 'never-synced']);
+  assert.equal(gh.files.size, 0);
+  assert.ok(gh.calls.some((c) => c.method === 'DELETE'));
+});
+
+test('syncAll does not pull back a discarded session', async () => {
+  const gh = fakeGitHub();
+  const sync = createSync({ owner: 'o', repo: 'r', token: 't', fetchImpl: gh.fetchImpl });
+  await sync.push(s1());
+  const out = await syncAll(sync, {}, [s1().id]);
+  assert.equal(out[s1().id], undefined);
 });

@@ -15,6 +15,14 @@ Live: https://robdhyman.github.io/niad-test/
   3-5-7s (15 points per 15-minute block).
 - Bonuses for different routes, different problems and variety, as on the sheet.
 - One wall clock: entries after the window are kept but do not score.
+- Stop a session to save it to History or discard it. Discard deletes it from the
+  phone and its file from GitHub.
+- Hardcore: no stop and no discard. It ends on its own at the planned time. With an
+  optional target score, a session short of the target at the planned time goes
+  into overtime: the clock reads T+, taps keep scoring, and it ends at the tap that
+  reaches the target or 24 h after the start. The tier ladder counts real elapsed
+  time for an overtime session. The only early end is an injury abort, which saves
+  the session with the week-after flare set to Yes.
 - Tier ladder 500, 750, 1,000, 1,500, 2,000: a tier passes on two sessions at or
   above it with no injury flare or red flag in the week after each.
 

@@ -113,17 +113,42 @@ export function createSync({ owner, repo, token, fetchImpl = globalThis.fetch.bi
     },
 
     getSession,
+
+    // Delete a session's file. A file that is already gone counts as removed.
+    async remove(id) {
+      const remote = await getSession(id);
+      if (!remote) return;
+      await call(`sessions/${id}.json`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: `Discard session ${id}`, sha: remote.sha }),
+      });
+    },
   };
 }
 
+// Delete the remote copies of discarded sessions. Returns the ids now gone; the rest
+// are retried on the next sync.
+export async function discardAll(sync, ids) {
+  const done = [];
+  for (const id of ids) {
+    try {
+      await sync.remove(id);
+      done.push(id);
+    } catch { /* retry next sync */ }
+  }
+  return done;
+}
+
 // Full sync: push every dirty local session, then pull remote sessions that are new or changed.
-// local: { [id]: session }. Returns the new map.
-export async function syncAll(sync, local) {
+// local: { [id]: session }. skip: discarded ids never to pull back. Returns the new map.
+export async function syncAll(sync, local, skip = []) {
   const out = { ...local };
   for (const s of Object.values(out)) {
     if (s.dirty) out[s.id] = await sync.push(s);
   }
   for (const { id, sha } of await sync.list()) {
+    if (skip.includes(id)) continue;
     const mine = out[id];
     if (mine && mine.sha === sha) continue;
     const remote = await sync.getSession(id);

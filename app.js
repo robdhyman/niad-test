@@ -1,13 +1,14 @@
 import {
   ROUTES, ROUTE_GRADES, BOULDERS, BOULDER_GRADES, EXERCISES, ROWS, TIERS, WEEKLY_MINUTES, MAX_MINUTES,
-  scoreSession, previewRoute, previewProblem, routeFirstGo, sessionEnd, ladder,
+  scoreSession, previewRoute, previewProblem, routeFirstGo, sessionEnd, ladder, hardcoreEnd, ladderMinutes,
   ROUTE_BONUS, BOULDER_BONUS, VARIETY_BONUS, MAX_REPEATS,
 } from './scoring.js';
-import { createSync, syncAll } from './sync.js';
+import { createSync, syncAll, discardAll } from './sync.js';
 
 // ---------- State ----------
 const KEY = 'niad.v1';
-const blank = () => ({ sessions: {}, activeId: null, settings: { owner: 'robdhyman', repo: 'niad-log', token: '' } });
+// discarded: ids whose GitHub copy still has to be deleted.
+const blank = () => ({ sessions: {}, activeId: null, discarded: [], settings: { owner: 'robdhyman', repo: 'niad-log', token: '' } });
 
 function load() {
   try {
@@ -24,7 +25,7 @@ function save() {
 }
 
 let state = load();
-const ui = { tab: 'session', seg: 'routes', sheet: null, toast: null, sync: { status: 'idle', msg: '' } };
+const ui = { tab: 'session', seg: 'routes', sheet: null, toast: null, sync: { status: 'idle', msg: '' }, hardcore: false, target: '' };
 
 const uid = () => Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -43,12 +44,13 @@ function touch(session) {
 }
 
 // ---------- Actions ----------
-function startSession(kind, hours) {
+function startSession(kind, hours, { hardcore = false, target = null } = {}) {
   const now = new Date();
   const durationMin = kind === 'weekly' ? WEEKLY_MINUTES : Math.min(MAX_MINUTES, Math.max(60, Math.round(hours * 60)));
   const s = {
     id: sessionId(now), version: 1, kind, startedAt: now.toISOString(), durationMin,
-    endedAt: null, flareAfter: null, routes: [], problems: [], entries: [], deleted: [],
+    hardcore, target: hardcore && target > 0 ? Math.round(target) : null,
+    endedAt: null, endReason: null, flareAfter: null, routes: [], problems: [], entries: [], deleted: [],
   };
   state.sessions[s.id] = s;
   state.activeId = s.id;
@@ -56,17 +58,49 @@ function startSession(kind, hours) {
   touch(s);
 }
 
-function endSession() {
-  const s = active();
-  if (!s) return;
-  s.endedAt = new Date().toISOString();
+// reason: 'stop' (saved by hand), 'time', 'target', 'max' (hardcore, automatic), 'abort' (injury).
+function finishSession(s, { at = new Date(), reason = 'stop' } = {}) {
+  s.endedAt = new Date(at).toISOString();
+  s.endReason = reason;
+  if (reason === 'abort') s.flareAfter = true;
   s.total = scoreSession(s).total;
-  state.activeId = null;
+  if (state.activeId === s.id) state.activeId = null;
   ui.tab = 'history';
+  ui.sheet = null;
   touch(s);
 }
 
+// Delete the active session here and, on the next sync, its GitHub copy.
+function discardSession() {
+  const s = active();
+  if (!s || s.hardcore) return;
+  delete state.sessions[s.id];
+  state.activeId = null;
+  state.discarded = [...new Set([...(state.discarded || []), s.id])];
+  ui.sheet = null;
+  ui.tab = 'session';
+  save();
+  scheduleSync(500);
+}
+
+const END_NOTE = {
+  time: 'Time: session saved',
+  target: 'Target reached: session saved',
+  max: '24 hours up: session saved',
+};
+// Ends the active hardcore session when its time, target or 24-hour cap says so.
+function checkHardcore() {
+  const s = active();
+  if (!s || !s.hardcore) return false;
+  const end = hardcoreEnd(s, new Date());
+  if (!end) return false;
+  finishSession(s, end);
+  showToast(END_NOTE[end.reason]);
+  return true;
+}
+
 function addEntry(entry, label) {
+  if (checkHardcore()) { render(); return; }
   const s = active();
   const before = scoreSession(s).total;
   const e = { id: uid(), t: new Date().toISOString(), ...entry };
@@ -74,11 +108,12 @@ function addEntry(entry, label) {
   s.total = scoreSession(s).total;
   touch(s);
   showToast(`${label}  +${s.total - before}`, e.id);
+  checkHardcore();
 }
 
 function removeEntry(id) {
   const s = active() || Object.values(state.sessions).find((x) => x.entries.some((e) => e.id === id));
-  if (!s) return;
+  if (!s || (s.hardcore && s.endedAt)) return;
   s.entries = s.entries.filter((e) => e.id !== id);
   s.deleted = [...(s.deleted || []), id];
   s.total = scoreSession(s).total;
@@ -107,12 +142,16 @@ async function runSync() {
   renderHeaderOnly();
   try {
     const sync = createSync(state.settings);
+    const gone = await discardAll(sync, state.discarded || []);
+    state.discarded = (state.discarded || []).filter((id) => !gone.includes(id));
     const before = JSON.stringify(state.sessions);
-    const next = await syncAll(sync, state.sessions);
+    const next = await syncAll(sync, state.sessions, [...state.discarded, ...gone]);
     // keep any taps made while the sync ran
     for (const [id, s] of Object.entries(state.sessions)) {
       if (s.dirty && JSON.stringify(s) !== JSON.stringify(JSON.parse(before)[id] || null)) next[id] = s;
     }
+    // drop sessions discarded while the sync ran
+    for (const id of Object.keys(next)) if (!state.sessions[id] && JSON.parse(before)[id]) delete next[id];
     state.sessions = next;
     save();
     ui.sync = { status: 'ok', msg: 'Saved to GitHub' };
@@ -140,16 +179,33 @@ function fmtClock(ms) {
   return `${neg ? '+' : ''}${h}:${pad(m)}:${pad(sec)}`;
 }
 
-function tierFor(total) {
+// Hardcore clock: T−h:mm:ss before the planned end, T+h:mm:ss in overtime.
+function fmtT(msToEnd) {
+  const t = Math.abs(Math.floor(msToEnd / 1000));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+  return `T${msToEnd > 0 ? '−' : '+'}${h}:${pad(m)}:${pad(sec)}`;
+}
+
+// Clock text and note for the header and the 1-second tick.
+function clockParts(s) {
+  const left = sessionEnd(s) - Date.now();
+  if (!s.hardcore) return { clock: left > 0 ? fmtClock(left) : 'Time', note: left > 0 ? 'left' : 'Window over: new taps don’t score' };
+  if (left > 0) return { clock: fmtT(left), note: s.target ? `Hardcore · target ${s.target}` : 'Hardcore · no stopping' };
+  const capLeft = new Date(s.startedAt).getTime() + MAX_MINUTES * 60000 - Date.now();
+  const need = s.target - scoreSession(s).total;
+  return { clock: fmtT(left), note: `Overtime · ${need} to target · ${fmtClock(capLeft)} to 24 h` };
+}
+
+function tierFor(total, s) {
   const l = ladder(sessionsForLadder());
-  const target = l.current ? l.current.tier : TIERS[TIERS.length - 1];
-  return { target, pct: Math.min(100, (total / target) * 100) };
+  const target = s?.target || (l.current ? l.current.tier : TIERS[TIERS.length - 1]);
+  return { target, word: s?.target ? 'target' : 'tier', pct: Math.min(100, (total / target) * 100) };
 }
 
 function sessionsForLadder() {
   return Object.values(state.sessions)
     .filter((s) => s.endedAt)
-    .map((s) => ({ id: s.id, startedAt: s.startedAt, durationMin: s.durationMin, total: scoreSession(s).total, flareAfter: s.flareAfter ?? null }));
+    .map((s) => ({ id: s.id, startedAt: s.startedAt, durationMin: ladderMinutes(s), total: scoreSession(s).total, flareAfter: s.flareAfter ?? null }));
 }
 
 function header() {
@@ -160,16 +216,16 @@ function header() {
       <div class="sync"><i class="dot ${sync.cls}"></i>${esc(sync.msg)}</div></div></div></header>`;
   }
   const r = scoreSession(s);
-  const left = sessionEnd(s) - Date.now();
-  const tier = tierFor(r.total);
+  const c = clockParts(s);
+  const tier = tierFor(r.total, s);
   return `<header class="top"><div class="wrap">
     <div><div class="total" id="total">${r.total}<small>pts</small></div>
       <div class="sync"><i class="dot ${sync.cls}"></i><span id="syncmsg">${esc(sync.msg)}</span></div></div>
-    <div class="clock"><b id="clock">${left > 0 ? fmtClock(left) : 'Time'}</b>
-      <span id="clocknote">${left > 0 ? 'left' : 'Window over: new taps don’t score'}</span></div>
+    <div class="clock"><b id="clock">${c.clock}</b>
+      <span id="clocknote">${esc(c.note)}</span></div>
   </div>
   <div class="wrap"><div class="tierbar"><i style="width:${tier.pct}%"></i></div>
-    <div class="tiernote">${r.total} / ${tier.target} tier${r.late ? ` · ${r.late} late entr${r.late === 1 ? 'y' : 'ies'} not scored` : ''}</div></div>
+    <div class="tiernote">${r.total} / ${tier.target} ${tier.word}${r.late ? ` · ${r.late} late entr${r.late === 1 ? 'y' : 'ies'} not scored` : ''}</div></div>
   </header>`;
 }
 
@@ -179,6 +235,13 @@ function startView() {
   return `<div class="wrap">
     <div class="empty"><h1>Start a session</h1>
       <p>The clock starts when you tap Start and runs through breaks.</p></div>
+    <div class="card">
+      <label class="check"><input type="checkbox" id="hardcore" ${ui.hardcore ? 'checked' : ''}> <b>Hardcore</b></label>
+      <p class="muted">No stop and no discard. Ends on its own at the planned time. Injury is the only way out.</p>
+      <div class="field" ${ui.hardcore ? '' : 'hidden'} id="targetField"><label for="target">Target score (optional)</label>
+        <input class="text" id="target" type="number" inputmode="numeric" min="1" step="1" placeholder="e.g. 750" value="${esc(ui.target || '')}">
+        <p class="muted">Short of it at the planned time? The clock goes to T+ and keeps scoring until you reach it, up to 24 h from the start.</p></div>
+    </div>
     <button class="btn primary" data-action="start-weekly">Weekly · 6 hours</button>
     <div class="card" style="margin-top:14px">
       <h3>Long day</h3>
@@ -186,6 +249,7 @@ function startView() {
       <div class="kind"><input class="text" id="longHours" type="number" inputmode="decimal" min="1" max="24" step="0.5" value="12" aria-label="Hours">
       <button class="btn" data-action="start-long">Start long day</button></div>
     </div>
+
     ${cur ? `<p class="muted" style="text-align:center">Current tier: <b>${cur.tier}</b> · ${cur.qualifying}/2 sessions${cur.pending ? ` · ${cur.pending} waiting on the week-after check` : ''}</p>` : '<p class="ok" style="text-align:center"><b>All tiers passed.</b></p>'}
   </div>`;
 }
@@ -283,7 +347,9 @@ function scoreView(s) {
     ${entries.length ? entries.map((e) => `<div class="row"><div>${describe(e)}<div class="muted">${new Date(e.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${late(e) ? ' · after window, not scored' : ''}</div></div>
       <button class="chip" data-action="del" data-id="${e.id}" aria-label="Delete entry">✕</button></div>`).join('') : '<p class="muted">Nothing logged yet.</p>'}
   </div>
-  <button class="btn primary" data-action="end">End session</button>`;
+  ${s.hardcore ? `<p class="muted" style="text-align:center">Hardcore: ends at the planned time${s.target ? `, or in overtime when you reach ${s.target} (24 h max)` : ''}.</p>
+    <button class="btn danger" data-action="abort">Injury: end now</button>`
+    : '<button class="btn primary" data-action="stop">Stop session</button>'}`;
 }
 
 function sessionView() {
@@ -294,6 +360,18 @@ function sessionView() {
   return `<div class="wrap">
     <div class="seg" role="tablist">${segs.map(([k, l]) => `<button role="tab" aria-pressed="${ui.seg === k}" data-action="seg" data-seg="${k}">${l}</button>`).join('')}</div>
     ${body}</div>`;
+}
+
+function endNote(s) {
+  if (!s.endedAt) return '';
+  const h = (new Date(s.endedAt) - new Date(s.startedAt)) / 36e5;
+  const took = `${Math.floor(h)}:${pad(Math.floor((h % 1) * 60))}`;
+  return {
+    target: ` · <span class="ok">hit target at ${took}</span>`,
+    max: ` · missed target in 24 h`,
+    abort: ` · <span class="err">ended for injury at ${took}</span>`,
+    stop: Number(h) < s.durationMin / 60 ? ` · stopped at ${took}` : '',
+  }[s.endReason] || '';
 }
 
 function historyView() {
@@ -312,7 +390,7 @@ function historyView() {
     const weekDone = s.endedAt && Date.now() - new Date(s.endedAt) >= 7 * 864e5;
     return `<div class="card"><div class="row" style="border:0;padding-top:0">
         <div><b>${d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}</b>
-          <div class="muted">${s.kind === 'weekly' ? 'Weekly' : 'Long day'} · ${s.durationMin / 60} h · ${r.counts.differentRoutes} routes · ${r.counts.differentProblems} problems${isActive ? ' · in progress' : ''}${s.dirty ? ' · unsynced' : ''}</div></div>
+          <div class="muted">${s.hardcore ? '<b>Hardcore</b> · ' : ''}${s.kind === 'weekly' ? 'Weekly' : 'Long day'} · ${s.durationMin / 60} h${s.target ? ` · target ${s.target}` : ''}${endNote(s)} · ${r.counts.differentRoutes} routes · ${r.counts.differentProblems} problems${isActive ? ' · in progress' : ''}${s.dirty ? ' · unsynced' : ''}</div></div>
         <b class="total" style="font-size:28px">${r.total}</b></div>
       ${s.endedAt ? `<div class="label" style="margin-top:6px">Week after: flare or red flag?</div>
         <div class="falls" style="grid-template-columns:repeat(3,1fr)">
@@ -355,6 +433,23 @@ function sheetView() {
   const sh = ui.sheet;
   if (!sh) return '';
   const s = active();
+  if (sh.kind === 'stop') {
+    const r = scoreSession(s);
+    return `<div class="scrim" data-action="close"></div><div class="sheet" role="dialog" aria-label="Stop session">
+      <h2>Stop session</h2>
+      <p class="muted">${r.total} points, ${s.entries.length} entr${s.entries.length === 1 ? 'y' : 'ies'}.</p>
+      <button class="btn primary" data-action="stop-save">Save to History</button>
+      <button class="btn danger" data-action="stop-discard">Discard</button>
+      <p class="muted">Discard deletes this session from this device and from GitHub.</p>
+      <button class="btn" data-action="close">Keep going</button></div>`;
+  }
+  if (sh.kind === 'abort') {
+    return `<div class="scrim" data-action="close"></div><div class="sheet" role="dialog" aria-label="End for injury">
+      <h2>End for injury?</h2>
+      <p class="muted">Hardcore sessions only end early for an injury. The session is saved as ended for injury, with the week-after flare set to Yes, so it can't count toward a tier.</p>
+      <button class="btn danger" data-action="abort-confirm">End now: injury</button>
+      <button class="btn" data-action="close">Keep going</button></div>`;
+  }
   if (sh.kind === 'route') {
     const routes = s.routes.filter((r) => r.grade === sh.grade);
     const isNew = sh.routeId === 'new';
@@ -488,11 +583,15 @@ function renderHeaderOnly() {
 // Tick the clock without re-rendering inputs.
 setInterval(() => {
   const s = active();
+  if (!s) return;
+  if (checkHardcore()) { render(); return; }
   const el = document.getElementById('clock');
-  if (!s || !el) return;
-  const left = sessionEnd(s) - Date.now();
-  if (left <= 0 && el.textContent !== 'Time') { render(); return; }
-  if (left > 0) el.textContent = fmtClock(left);
+  if (!el) return;
+  const c = clockParts(s);
+  const note = document.getElementById('clocknote');
+  if (!s.hardcore && c.clock === 'Time' && el.textContent !== 'Time') { render(); return; }
+  el.textContent = c.clock;
+  if (note && note.textContent !== c.note) note.textContent = c.note;
 }, 1000);
 
 // ---------- Events ----------
@@ -504,15 +603,20 @@ root.addEventListener('click', async (ev) => {
   switch (a) {
     case 'tab': ui.tab = el.dataset.tab; ui.sheet = null; window.scrollTo(0, 0); break;
     case 'seg': ui.seg = el.dataset.seg; break;
-    case 'start-weekly': startSession('weekly'); break;
+    case 'start-weekly': startSession('weekly', 6, hardcoreChoice()); break;
     case 'start-long': {
       const h = parseFloat(document.getElementById('longHours').value) || 12;
-      startSession('long', h);
+      startSession('long', h, hardcoreChoice());
       break;
     }
-    case 'end':
-      if (!confirm('End this session? The log locks and the score goes to History.')) return;
-      endSession(); break;
+    case 'stop': if (s && !s.hardcore) ui.sheet = { kind: 'stop' }; break;
+    case 'stop-save': if (s && !s.hardcore) finishSession(s, { reason: 'stop' }); break;
+    case 'stop-discard':
+      if (!s || s.hardcore) return;
+      if (!confirm('Discard this session? It is deleted from this device and from GitHub. This cannot be undone.')) return;
+      discardSession(); break;
+    case 'abort': if (s?.hardcore) ui.sheet = { kind: 'abort' }; break;
+    case 'abort-confirm': if (s?.hardcore) finishSession(s, { reason: 'abort' }); break;
     case 'open-route': {
       const g = el.dataset.grade;
       const last = [...s.entries].reverse().find((e) => e.type === 'route' && s.routes.find((r) => r.id === e.routeId)?.grade === g);
@@ -617,7 +721,24 @@ function keepLabel() {
   if (el && ui.sheet) ui.sheet.label = el.value;
 }
 
+function hardcoreChoice() {
+  const target = Number(document.getElementById('target')?.value) || null;
+  const choice = { hardcore: !!ui.hardcore, target: ui.hardcore ? target : null };
+  ui.hardcore = false;
+  ui.target = '';
+  return choice;
+}
+
+root.addEventListener('input', (ev) => {
+  if (ev.target.id === 'target') ui.target = ev.target.value;
+});
+
 root.addEventListener('change', async (ev) => {
+  if (ev.target.id === 'hardcore') {
+    ui.hardcore = ev.target.checked;
+    document.getElementById('targetField').hidden = !ui.hardcore;
+    return;
+  }
   if (ev.target.id !== 'importFile') return;
   const file = ev.target.files[0];
   if (!file) return;

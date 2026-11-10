@@ -132,9 +132,53 @@ export function sessionEnd(session) {
   return new Date(new Date(session.startedAt).getTime() + session.durationMin * 60000);
 }
 
+const ms = (d) => new Date(d).getTime();
+
 // Entries logged inside the session window count; later ones are kept but not scored.
+// A hardcore session with a target scores into overtime: up to the tap that reached the
+// target (its endedAt), and never at or past 24 hours from the start.
 export function inWindow(session, entry) {
-  return new Date(entry.t) < sessionEnd(session);
+  const t = ms(entry.t);
+  if (session.hardcore && session.target) {
+    if (t >= ms(session.startedAt) + MAX_MINUTES * 60000) return false;
+    return !session.endedAt || t <= ms(session.endedAt);
+  }
+  return t < ms(sessionEnd(session));
+}
+
+/**
+ * When a hardcore session ends: { at: Date, reason: 'time' | 'target' | 'max' }, or null
+ * while it is still running. It cannot be stopped by hand (an injury abort is separate).
+ * - No target, or the target was reached by the planned end: ends at the planned end.
+ * - Otherwise overtime: ends at the tap that reaches the target, or 24 h after the start.
+ */
+export function hardcoreEnd(session, now = new Date()) {
+  const start = ms(session.startedAt);
+  const planned = start + session.durationMin * 60000;
+  const cap = start + MAX_MINUTES * 60000;
+  const t = ms(now);
+  if (t < planned) return null;
+  const byTime = { at: new Date(planned), reason: 'time' };
+  const target = Number(session.target) || 0;
+  if (!target) return byTime;
+  const open = { ...session, endedAt: null };
+  const sorted = [...(session.entries || [])].sort((a, b) => ms(a.t) - ms(b.t));
+  const totalWith = (list) => scoreSession({ ...open, entries: list }).total;
+  const inTime = sorted.filter((e) => ms(e.t) < planned);
+  if (totalWith(inTime) >= target) return byTime;
+  const overtime = sorted.filter((e) => ms(e.t) >= planned && ms(e.t) < cap && ms(e.t) <= t);
+  for (let i = 0; i < overtime.length; i++) {
+    if (totalWith([...inTime, ...overtime.slice(0, i + 1)]) >= target) return { at: new Date(overtime[i].t), reason: 'target' };
+  }
+  return t >= cap ? { at: new Date(cap), reason: 'max' } : null;
+}
+
+// Minutes the tier ladder counts: the planned length, or the real elapsed time when a
+// hardcore session ran into overtime.
+export function ladderMinutes(session) {
+  if (!session.hardcore || !session.endedAt) return session.durationMin;
+  const elapsed = Math.ceil((ms(session.endedAt) - ms(session.startedAt)) / 60000);
+  return Math.max(session.durationMin, elapsed);
 }
 
 /**
