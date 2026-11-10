@@ -62,6 +62,15 @@ export const ROUTE_BONUS = [[10, 10], [15, 20], [20, 35], [25, 50], [30, 70], [3
 export const BOULDER_BONUS = [[10, 3], [15, 8], [20, 15], [25, 25], [30, 35], [35, 45], [40, 60], [45, 80], [50, 105], [55, 135], [60, 170], [65, 210], [70, 255], [75, 305]];
 export const VARIETY_BONUS = [[7, 5], [8, 10], [9, 15], [10, 20], [11, 25], [12, 30], [13, 35], [14, 45], [15, 55], [16, 70], [17, 90], [18, 120], [19, 155], [20, 195], [21, 240], [22, 290], [23, 345], [24, 405], [25, 470], [26, 540]];
 
+// Hans's lettered rows, A to AA, in sheet order. The variety bonus counts how many are used.
+export const ROWS = [
+  ...ROUTE_GRADES.map((g) => ({ letter: ROUTES[g].letter, label: g })),
+  { letter: 'J', label: 'Push-ups' }, { letter: 'K', label: 'Sit-ups' }, { letter: 'L', label: 'Pull-ups' },
+  { letter: 'M', label: 'Lunges/squats' }, { letter: 'N', label: 'Dips' }, { letter: 'O', label: 'Ab roll/back ext' },
+  { letter: 'P', label: 'Cardio/run' },
+  ...BOULDER_GRADES.map((g) => ({ letter: BOULDERS[g].letter, label: g })),
+];
+
 export const TIERS = [500, 750, 1000, 1500, 2000];
 export const WEEKLY_MINUTES = 360;
 export const MAX_MINUTES = 24 * 60;

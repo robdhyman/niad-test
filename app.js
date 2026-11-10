@@ -1,5 +1,5 @@
 import {
-  ROUTES, ROUTE_GRADES, BOULDERS, BOULDER_GRADES, EXERCISES, TIERS, WEEKLY_MINUTES, MAX_MINUTES,
+  ROUTES, ROUTE_GRADES, BOULDERS, BOULDER_GRADES, EXERCISES, ROWS, TIERS, WEEKLY_MINUTES, MAX_MINUTES,
   scoreSession, previewRoute, previewProblem, routeFirstGo, sessionEnd, ladder,
 } from './scoring.js';
 import { createSync, syncAll } from './sync.js';
@@ -190,22 +190,24 @@ function startView() {
 }
 
 function routesView(s) {
+  const usedLetters = new Set(scoreSession(s).letters);
   const counts = {};
   for (const r of s.routes) counts[r.grade] = (counts[r.grade] || 0) + 1;
   return `<div class="grid">${ROUTE_GRADES.map((g) => `
-    <button class="tile" data-action="open-route" data-grade="${g}">
-      <b>${g}</b><span>${ROUTES[g].rp} clean · ${ROUTES[g].rep} rpt</span>
+    <button class="tile${usedLetters.has(ROUTES[g].letter) ? ' used' : ''}" data-action="open-route" data-grade="${g}">
+      <i class="ltr">${ROUTES[g].letter}</i><b>${g}</b><span>${ROUTES[g].rp} clean · ${ROUTES[g].rep} rpt</span>
       ${counts[g] ? `<em>${counts[g]} route${counts[g] > 1 ? 's' : ''}</em>` : ''}
     </button>`).join('')}</div>
     <p class="muted" style="margin-top:12px">5.10a–d all score as 5.10. Lead, top rope and auto-belay score the same.</p>`;
 }
 
 function bouldersView(s) {
+  const usedLetters = new Set(scoreSession(s).letters);
   const counts = {};
   for (const p of s.problems) counts[p.grade] = (counts[p.grade] || 0) + 1;
   return `<div class="grid">${BOULDER_GRADES.map((g) => `
-    <button class="tile" data-action="open-boulder" data-grade="${g}">
-      <b>${g}</b><span>${BOULDERS[g].first} send · ${BOULDERS[g].rep} rpt</span>
+    <button class="tile${usedLetters.has(BOULDERS[g].letter) ? ' used' : ''}" data-action="open-boulder" data-grade="${g}">
+      <i class="ltr">${BOULDERS[g].letter}</i><b>${g}</b><span>${BOULDERS[g].first} send · ${BOULDERS[g].rep} rpt</span>
       ${counts[g] ? `<em>${counts[g]} problem${counts[g] > 1 ? 's' : ''}</em>` : ''}
     </button>`).join('')}</div>
     <p class="muted" style="margin-top:12px">Log sends only. A send on any attempt earns first-go points.</p>`;
@@ -229,7 +231,7 @@ function exercisesView(s) {
     const rate = ex.each ? `1 ${ex.unit} = ${ex.each} pts` : ex.per === 1 ? `1 rep = 1 pt` : `${ex.per} ${ex.unit} = 1 pt`;
     const pts = ex.pool ? '' : row ? `${row.points} pts` : '';
     return `<div class="ex">
-      <div class="ex-head"><div><b>${esc(ex.label)}</b> <span class="muted">${rate}</span></div><span class="pts">${pts}</span></div>
+      <div class="ex-head"><div>${ex.letter ? `<i class="ltr inline${r.letters.includes(ex.letter) ? ' on' : ''}">${ex.letter}</i>` : ''}<b>${esc(ex.label)}</b> <span class="muted">${rate}</span></div><span class="pts">${pts}</span></div>
       <div class="muted">${row ? `${row.amount} ${ex.unit} so far${row.toNext && row.toNext !== ex.per ? ` · ${row.toNext} more for next point` : ''}` : '&nbsp;'}</div>
       <div class="ex-actions">
         ${quickAdds(ex).map((n) => `<button class="chip" data-action="add-ex" data-key="${ex.key}" data-amount="${n}">+${n}</button>`).join('')}
@@ -262,6 +264,10 @@ function scoreView(s) {
     const x = exByKey[e.key]; return `${esc(x?.label)} · ${e.amount} ${x?.unit}`;
   };
   return `
+  <div class="card"><h3>Rows used: ${r.counts.variety} of ${ROWS.length}</h3>
+    <div class="rows">${ROWS.map((x) => `<div class="rowcell${r.letters.includes(x.letter) ? ' on' : ''}"><b>${x.letter}</b><span>${esc(x.label)}</span></div>`).join('')}</div>
+    <p class="muted">Each lit row counts once toward the variety bonus. Banded pull-ups, burpees and 3-5-7s are not rows.</p>
+  </div>
   <div class="card"><h3>Score</h3>
     <div class="row"><span>Routes (${r.counts.differentRoutes} different)</span><span class="pts">${r.routePoints}</span></div>
     <div class="row"><span>Boulders (${r.counts.differentProblems} different)</span><span class="pts">${r.boulderPoints}</span></div>

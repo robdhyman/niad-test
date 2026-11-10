@@ -1,5 +1,5 @@
 // Network first, cache fallback: the page still opens in a gym with no signal.
-const CACHE = 'niad-v1';
+const CACHE = 'niad-v2';
 const FILES = ['./', 'index.html', 'app.js', 'scoring.js', 'sync.js', 'manifest.webmanifest', 'icon.svg'];
 self.addEventListener('install', (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
