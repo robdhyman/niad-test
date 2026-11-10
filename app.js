@@ -1,6 +1,7 @@
 import {
   ROUTES, ROUTE_GRADES, BOULDERS, BOULDER_GRADES, EXERCISES, ROWS, TIERS, WEEKLY_MINUTES, MAX_MINUTES,
   scoreSession, previewRoute, previewProblem, routeFirstGo, sessionEnd, ladder,
+  ROUTE_BONUS, BOULDER_BONUS, VARIETY_BONUS, MAX_REPEATS,
 } from './scoring.js';
 import { createSync, syncAll } from './sync.js';
 
@@ -396,8 +397,74 @@ function sheetView() {
     <button class="btn" data-action="close">Cancel</button></div>`;
 }
 
+function rulesView() {
+  const bonusChips = (table, unit) => `<div class="bchips">${table.map(([n, p]) => `<span class="bchip"><b>${n}</b> ${unit}<em>+${p}</em></span>`).join('')}</div>`;
+  const maxRp = ROUTES['5.14'].rp;
+  return `<div class="wrap"><h1>Points</h1>
+
+  <div class="card"><h3>How a total is built</h3>
+    <div class="flow">
+      <div class="fbox">Routes<small>per route: 1 first go + up to ${MAX_REPEATS} repeats</small></div>
+      <div class="fop">+</div>
+      <div class="fbox">Boulders<small>per problem: 1 first send + up to ${MAX_REPEATS} repeats</small></div>
+      <div class="fop">+</div>
+      <div class="fbox">Exercises<small>reps or calories ÷ rate, rounded down</small></div>
+      <div class="fop">+</div>
+      <div class="fbox bonus">Bonuses<small>different routes · different problems · rows used (A–AA)</small></div>
+      <div class="fop">=</div>
+      <div class="fbox total-box">Total<small>everything logged inside the session clock</small></div>
+    </div>
+  </div>
+
+  <div class="card"><h3>Routes</h3>
+    <p class="muted">Clean = no falls or hangs. Lead, top rope and auto-belay score the same. 5.10a–d all score as 5.10.</p>
+    <table class="rubric"><thead><tr><th>Row</th><th>Grade</th><th>Clean<br>1st / rpt</th><th>Falls on 1st<br>1 · 2 · 3+</th><th>Hangs rpt<br>≤2</th></tr></thead><tbody>
+    ${ROUTE_GRADES.map((g) => { const r = ROUTES[g]; return `<tr><td class="ltrc">${r.letter}</td><td><b>${g}</b><i class="bar" style="width:${Math.max(4, (r.rp / maxRp) * 100)}%"></i></td><td><b>${r.rp}</b> / ${r.rep}</td><td>${g === '5.6' ? '1 (“moves”)' : r.nc.join(' · ')}</td><td>${r.ncRep}</td></tr>`; }).join('')}
+    </tbody></table>
+    <ul class="rules">
+      <li>One ascent per route takes the first-go points; the rest are repeats, max ${MAX_REPEATS}.</li>
+      <li>A repeat with 3 or more hangs scores 1.</li>
+      <li>Never both clean and fallen first-go points on one route: the app keeps the better one.</li>
+      <li>Down-climbing: same route = a repeat, a different route = its first go.</li>
+    </ul>
+  </div>
+
+  <div class="card"><h3>Boulders</h3>
+    <p class="muted">Log sends only. A send on any attempt earns first-send points.</p>
+    <table class="rubric"><thead><tr><th>Row</th><th>Grade</th><th>1st send</th><th>Repeat</th></tr></thead><tbody>
+    ${BOULDER_GRADES.map((g) => { const b = BOULDERS[g]; return `<tr><td class="ltrc">${b.letter}</td><td><b>${g}</b></td><td><b>${b.first}</b></td><td>${b.rep}</td></tr>`; }).join('')}
+    </tbody></table>
+  </div>
+
+  <div class="card"><h3>Exercises</h3>
+    <table class="rubric"><thead><tr><th>Row</th><th>Exercise</th><th>Rate</th><th>From</th></tr></thead><tbody>
+    ${EXERCISES.map((ex) => `<tr><td class="ltrc">${ex.letter || '–'}</td><td>${esc(ex.label)}</td><td>${ex.each ? `${ex.each} pts per ${ex.unit}` : ex.per === 1 ? '1 pt each' : `1 pt per ${ex.per}${ex.unit === 'cal' ? ' cal' : ''}`}</td><td class="muted">${ex.source.startsWith('Hans') ? 'Hans' : 'Rob'}</td></tr>`).join('')}
+    </tbody></table>
+    <ul class="rules">
+      <li>Machine calories (Stairmaster, rower, SkiErg) are added together before rounding down.</li>
+      <li>Reps inside a 3-5-7 block don't also count as pull-ups, push-ups or squats.</li>
+      <li>Rob's additions have no row letter, so they don't count toward the variety bonus.</li>
+    </ul>
+  </div>
+
+  <div class="card"><h3>Bonuses</h3>
+    <p class="muted">The highest step reached applies; steps don't add up.</p>
+    <div class="label">Different routes</div>${bonusChips(ROUTE_BONUS, 'routes')}
+    <div class="label">Different problems</div>${bonusChips(BOULDER_BONUS, 'probs')}
+    <div class="label">Rows used (A–AA)</div>${bonusChips(VARIETY_BONUS, 'rows')}
+  </div>
+
+  <div class="card"><h3>Tier ladder</h3>
+    <div class="ladderdiag">${TIERS.map((t, i) => `<div class="rung" style="--h:${20 + i * 16}%"><i></i><b>${t.toLocaleString()}</b><small>${i === 0 ? 'in 6 h' : '≤ 24 h'}</small></div>`).join('')}</div>
+    <p class="muted">Pass a tier with two sessions at or above it and no injury flare or red flag in the week after each. Passing unlocks the next.</p>
+  </div>
+
+  <p class="muted" style="text-align:center">Hans Florine's Gym workout score card (Jan 2008), plus Rob's added exercises.</p>
+  </div>`;
+}
+
 function tabsView() {
-  const t = [['session', active() ? 'Session' : 'Start'], ['history', 'History'], ['settings', 'Settings']];
+  const t = [['session', active() ? 'Session' : 'Start'], ['rules', 'Points'], ['history', 'History'], ['settings', 'Settings']];
   return `<nav class="tabs">${t.map(([k, l]) => `<button data-action="tab" data-tab="${k}" ${ui.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('')}</nav>`;
 }
 
@@ -408,7 +475,7 @@ function toastView() {
 
 const root = document.getElementById('app');
 function render() {
-  const view = { session: sessionView, history: historyView, settings: settingsView }[ui.tab]();
+  const view = { session: sessionView, rules: rulesView, history: historyView, settings: settingsView }[ui.tab]();
   const y = window.scrollY;
   root.innerHTML = header() + view + tabsView() + toastView() + sheetView();
   window.scrollTo(0, y);
